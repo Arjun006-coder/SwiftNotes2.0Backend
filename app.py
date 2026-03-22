@@ -41,7 +41,7 @@ def download_video(url: str, output_path: str = "temp_video.mp4") -> str:
             'outtmpl': output_path,
             'quiet': True,
             'no_warnings': True,
-            'cookiefile': 'youtube_cookies.txt'
+            'extractor_args': {'youtube': {'player_client': ['ios', 'android']}}
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
