@@ -2,7 +2,7 @@ import os
 import time
 import asyncio
 import random
-from pytubefix import YouTube
+import yt_dlp
 import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,20 +35,18 @@ def download_video(url: str, output_path: str = "temp_video.mp4") -> str:
     
     if os.path.exists(output_path):
         os.remove(output_path)
-        
     try:
-        # Passing 'ANDROID' specifically bypasses YouTube's strict Bot-Detection IP bans on Amazon EC2 servers.
-        yt = YouTube(url, client='ANDROID')
-        
-        # Pull the highest resolution pre-merged MP4 video seamlessly to avoid ffmpeg requirements
-        stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-        
-        if not stream:
-            raise Exception("YouTube dynamically blocked pre-merged formats. Cannot fetch mp4.")
+        ydl_opts = {
+            'format': 'best[ext=mp4]',
+            'outtmpl': output_path,
+            'quiet': True,
+            'no_warnings': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
             
-        stream.download(filename=output_path)
     except Exception as e:
-        print(f"Fatal pytubefix Download Error: {e}")
+        print(f"Fatal yt-dlp Download Error: {e}")
         raise e
             
     return output_path

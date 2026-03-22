@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-pytubefix
+yt-dlp
 google-generativeai
 pydantic
 python-dotenv
