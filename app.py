@@ -37,8 +37,8 @@ def download_video(url: str, output_path: str = "temp_video.mp4") -> str:
         os.remove(output_path)
         
     try:
-        # Initializing pytubefix connection which implicitly transpiles n-signatures via local Node binaries
-        yt = YouTube(url)
+        # Passing 'ANDROID' specifically bypasses YouTube's strict Bot-Detection IP bans on Amazon EC2 servers.
+        yt = YouTube(url, client='ANDROID')
         
         # Pull the highest resolution pre-merged MP4 video seamlessly to avoid ffmpeg requirements
         stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
