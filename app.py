@@ -37,7 +37,7 @@ def download_video(url: str, output_path: str = "temp_video.mp4") -> str:
         os.remove(output_path)
     try:
         ydl_opts = {
-            'format': 'best[ext=mp4]',
+            'format': 'best',
             'outtmpl': output_path,
             'quiet': True,
             'no_warnings': True,
