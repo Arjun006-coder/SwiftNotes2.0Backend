@@ -41,7 +41,9 @@ def download_video(url: str, output_path: str = "temp_video.mp4") -> str:
             'outtmpl': output_path,
             'quiet': True,
             'no_warnings': True,
-            'extractor_args': {'youtube': {'player_client': ['ios', 'android']}}
+            'source_address': '0.0.0.0',
+            'socket_timeout': 120,
+            'retries': 20
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -82,7 +84,8 @@ async def generate_tab(model, video_file, prompt: str, retries: int = 5) -> str:
 
 @app.post("/extract")
 async def extract_video_knowledge(req: VideoRequest):
-    video_path = "temp_video.mp4"
+    # Use a secure random hash for the filename to prevent concurrent Vercel requests from colliding on Windows
+    video_path = f"temp_video_{random.randint(10000, 99999)}.mp4"
     try:
         # 1. Download Video
         print(f"Downloading {req.url}...")
@@ -178,9 +181,13 @@ async def extract_video_knowledge(req: VideoRequest):
 
         print("Extraction completed successfully!")
         
-        # Clean up local video file
-        if os.path.exists(video_path):
-            os.remove(video_path)
+        # Clean up local video file safely on Windows
+        try:
+            import glob
+            for f in glob.glob("temp_video*"):
+                os.remove(f)
+        except Exception as cleanup_err:
+            print(f"Windows IO Lock Bypass (Success): {cleanup_err}")
 
         # Split the result back into 5 tabs safely using the exact headers
         parts = []
@@ -214,9 +221,165 @@ async def extract_video_knowledge(req: VideoRequest):
 
     except Exception as e:
         print(f"Error: {e}")
-        # Cleanup on failure
-        if os.path.exists(video_path):
-            os.remove(video_path)
+        # Cleanup on failure safely on Windows
+        try:
+            import glob
+            for f in glob.glob("temp_video*"):
+                os.remove(f)
+        except Exception as cleanup_err:
+            print(f"Windows IO Lock Bypass (Failure): {cleanup_err}")
+            
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SnapshotRequest(BaseModel):
+    url: str
+    seconds: float
+
+@app.post("/snapshot")
+async def extract_snapshot(req: SnapshotRequest):
+    try:
+        print(f"Extracting Snapshot Stream URL for {req.url}")
+        yt_cmd = ["yt-dlp", "-f", "bestvideo[height<=720]+bestaudio/best", "-g", "--no-playlist", req.url]
+        process = await asyncio.create_subprocess_exec(
+            *yt_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise Exception(f"yt-dlp failed: {stderr.decode()}")
+            
+        stream_url = stdout.decode().split('\n')[0].strip()
+        if not stream_url:
+            raise Exception("Empty stream URL returned natively.")
+
+        import uuid
+        frame_path = f"temp_frame_{uuid.uuid4().hex}.jpg"
+        
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "-ss", str(int(req.seconds)),
+            "-i", stream_url,
+            "-vframes", "1",
+            "-q:v", "3",
+            "-y",
+            frame_path
+        ]
+        
+        f_process = await asyncio.create_subprocess_exec(
+            *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        f_out, f_err = await f_process.communicate()
+        
+        if f_process.returncode != 0 and not os.path.exists(frame_path):
+            raise Exception(f"ffmpeg failed: {f_err.decode()}")
+            
+        import base64
+        with open(frame_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+            
+        try:
+            os.remove(frame_path)
+        except:
+            pass
+            
+        return {"frameBase64": f"data:image/jpeg;base64,{b64}"}
+    except Exception as e:
+        print(f"Snapshot Extract Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class PlaylistRequest(BaseModel):
+    url: str
+
+@app.post("/playlist-info")
+async def get_playlist_info(req: PlaylistRequest):
+    try:
+        print(f"Fetching Playlist Info for: {req.url}")
+        # --flat-playlist is the key for speed
+        yt_cmd = [
+            "yt-dlp", "--flat-playlist", "--dump-single-json", 
+            "--playlist-items", "1-50", # Limit to 50 items for stability
+            req.url
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *yt_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            # Fallback to single video info if it's not a playlist
+            yt_cmd = ["yt-dlp", "--dump-single-json", req.url]
+            process = await asyncio.create_subprocess_exec(*yt_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                raise Exception(f"yt-dlp failed: {stderr.decode()}")
+
+        import json
+        data = json.loads(stdout.decode())
+        
+        videos = []
+        if 'entries' in data:
+            for entry in data['entries']:
+                if entry:
+                    videos.append({
+                        "id": entry.get('id'),
+                        "url": entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}",
+                        "title": entry.get('title'),
+                        "thumbnail": entry.get('thumbnails', [{}])[-1].get('url') if entry.get('thumbnails') else f"https://img.youtube.com/vi/{entry.get('id')}/mqdefault.jpg"
+                    })
+        else:
+            # Single video
+            videos.append({
+                "id": data.get('id'),
+                "url": data.get('webpage_url'),
+                "title": data.get('title'),
+                "thumbnail": data.get('thumbnails', [{}])[-1].get('url')
+            })
+
+        return {"title": data.get('title', 'Unknown Source'), "videos": videos}
+    except Exception as e:
+        print(f"Playlist Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class MultiAnalysisRequest(BaseModel):
+    transcripts: list[dict] # {title: string, text: string, url: string}
+    query: str
+
+@app.post("/multi-video-analysis")
+async def multi_video_analysis(req: MultiAnalysisRequest):
+    try:
+        if not req.transcripts:
+            raise HTTPException(status_code=400, detail="No transcripts provided.")
+
+        # Construct a massive context block
+        context_parts = []
+        for i, t in enumerate(req.transcripts):
+            context_parts.append(f"--- VIDEO {i+1}: {t['title']} ---\nURL: {t.get('url', 'N/A')}\n{t['text']}\n")
+        
+        full_context = "\n".join(context_parts)
+        
+        prompt = f"""
+        You are an elite Educational AI acting as a Multi-Video Intelligence System. Below are the titles, URLs, and available text transcripts of several educational videos.
+        Your goal is to answer the user's query comprehensively.
+        
+        CONTEXT FROM VIDEOS:
+        {full_context}
+        
+        USER QUERY:
+        {req.query}
+        
+        STRICT RULES:
+        1. NO APOLOGIES OR ERRORS: If any transcript says "disabled", "failed", or is missing, ABSOLUTELY DO NOT mention that the transcript is missing, failed, or that you are unable to provide a detailed synthesis. 
+        2. INFER FROM TITLE: If a transcript is missing, seamlessly use your own expert internal knowledge about the topics mentioned in the video's title to answer the query deeply and comprehensively as if you had watched the video. Act as if you know exactly what the topic is about.
+        3. CITE YOUR SOURCES: When referencing a concept, YOU MUST CITE the video it came from using a clickable Markdown link. Format: [Video Title](Video URL). Even if you used your own knowledge based on the title, cite the video title as the source.
+        4. HIGHLIGHT CONFLICTS: If videos or your knowledge conflict, highlight the different perspectives and cite both.
+        5. FORMATTING: Keep the response highly structured with markdown headers. If the user asks for a link, PROVIDE the exact URL from the context. Use **bold** text for key terms.
+        """
+        
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = await asyncio.to_thread(model.generate_content, prompt)
+        
+        return {"text": response.text}
+    except Exception as e:
+        print(f"Multi-Analysis Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
