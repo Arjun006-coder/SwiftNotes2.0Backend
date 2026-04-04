@@ -43,7 +43,12 @@ def download_video(url: str, output_path: str = "temp_video.mp4") -> str:
             'no_warnings': True,
             'source_address': '0.0.0.0',
             'socket_timeout': 120,
-            'retries': 20
+            'retries': 20,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'web']
+                }
+            }
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -239,7 +244,7 @@ class SnapshotRequest(BaseModel):
 async def extract_snapshot(req: SnapshotRequest):
     try:
         print(f"Extracting Snapshot Stream URL for {req.url}")
-        yt_cmd = ["yt-dlp", "-f", "bestvideo[height<=720]+bestaudio/best", "-g", "--no-playlist", req.url]
+        yt_cmd = ["yt-dlp", "--extractor-args", "youtube:player-client=ios,android,web", "-f", "bestvideo[height<=720]+bestaudio/best", "-g", "--no-playlist", req.url]
         process = await asyncio.create_subprocess_exec(
             *yt_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -296,7 +301,8 @@ async def get_playlist_info(req: PlaylistRequest):
         print(f"Fetching Playlist Info for: {req.url}")
         # --flat-playlist is the key for speed
         yt_cmd = [
-            "yt-dlp", "--flat-playlist", "--dump-single-json", 
+            "yt-dlp", "--extractor-args", "youtube:player-client=ios,android,web", 
+            "--flat-playlist", "--dump-single-json", 
             "--playlist-items", "1-50", # Limit to 50 items for stability
             req.url
         ]
@@ -306,7 +312,7 @@ async def get_playlist_info(req: PlaylistRequest):
         stdout, stderr = await process.communicate()
         if process.returncode != 0:
             # Fallback to single video info if it's not a playlist
-            yt_cmd = ["yt-dlp", "--dump-single-json", req.url]
+            yt_cmd = ["yt-dlp", "--extractor-args", "youtube:player-client=ios,android,web", "--dump-single-json", req.url]
             process = await asyncio.create_subprocess_exec(*yt_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await process.communicate()
             if process.returncode != 0:
